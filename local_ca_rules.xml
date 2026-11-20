@@ -1,0 +1,285 @@
+<!--
+  CA-Lab custom detection rules (Compromise Assessment lab)
+  Location on manager: /var/ossec/etc/rules/local_ca_rules.xml
+  ID range: 100100 - 100199
+  Endpoint: CA-WIN-01 (Sysmon SwiftOnSecurity + LSASS add-on, Defender, PS 4103/4104, Security 4688/4698/4720/4732/1102)
+
+  Chaining: rules hang off Wazuh's built-in per-event groups (sysmon_event1, sysmon_event_10,
+  sysmon_event_13, windows_defender, windows_security, powershell) so they fire AFTER the stock rule.
+  Field names follow the Wazuh eventchannel decoder (win.system.*, win.eventdata.* camelCase).
+-->
+
+<group name="ca_lab,">
+
+  <!-- ================================================================== -->
+  <!--  Microsoft Defender (EDR) : Microsoft-Windows-Windows Defender/Operational -->
+  <!-- ================================================================== -->
+
+  <rule id="100100" level="12">
+    <if_group>windows_defender</if_group>
+    <field name="win.system.eventID">^1116$</field>
+    <description>CA-Lab: Defender detected malware/PUA on $(win.system.computer)</description>
+    <mitre><id>T1204</id></mitre>
+    <group>ca_defender,malware,pci_dss_11.4,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <rule id="100101" level="10">
+    <if_group>windows_defender</if_group>
+    <field name="win.system.eventID">^1117$</field>
+    <description>CA-Lab: Defender took action against malware on $(win.system.computer)</description>
+    <mitre><id>T1204</id></mitre>
+    <group>ca_defender,malware,</group>
+  </rule>
+
+  <rule id="100102" level="13">
+    <if_group>windows_defender</if_group>
+    <field name="win.system.eventID">^5001$</field>
+    <description>CA-Lab: Defender real-time protection DISABLED on $(win.system.computer)</description>
+    <mitre><id>T1562.001</id></mitre>
+    <group>ca_defender,defense_evasion,</group>
+  </rule>
+
+  <rule id="100103" level="8">
+    <if_group>windows_defender</if_group>
+    <field name="win.system.eventID">^5007$</field>
+    <description>CA-Lab: Defender configuration changed on $(win.system.computer)</description>
+    <mitre><id>T1562.001</id></mitre>
+    <group>ca_defender,defense_evasion,</group>
+  </rule>
+
+  <rule id="100104" level="12">
+    <if_sid>100103</if_sid>
+    <match type="pcre2">(?i)Exclusions|DisableRealtimeMonitoring|DisableBehaviorMonitoring|DisableIOAVProtection|TamperProtection</match>
+    <description>CA-Lab: Defender exclusion added or protection weakened on $(win.system.computer)</description>
+    <mitre><id>T1562.001</id></mitre>
+    <group>ca_defender,defense_evasion,</group>
+  </rule>
+
+  <!-- ================================================================== -->
+  <!--  Credential access: LSASS (Sysmon EID 10)                          -->
+  <!-- ================================================================== -->
+
+  <rule id="100110" level="12">
+    <if_group>sysmon_event_10</if_group>
+    <field name="win.eventdata.targetImage" type="pcre2">(?i)\\lsass\.exe$</field>
+    <field name="win.eventdata.grantedAccess" type="pcre2">(?i)^0x(1010|1410|1438|143a|1418|1fffff|1f3fff|1f1fff|1f0fff|40)$</field>
+    <field name="win.eventdata.sourceImage" type="pcre2" negate="yes">(?i)\\(MsMpEng|MsSense|VBoxService|wazuh-agent|csrss|wininit|wmiprvse|Sysmon64)\.exe$</field>
+    <description>CA-Lab: LSASS memory access by $(win.eventdata.sourceImage) (access $(win.eventdata.grantedAccess)) - possible credential dumping</description>
+    <mitre><id>T1003.001</id></mitre>
+    <group>ca_credential_access,</group>
+  </rule>
+
+  <!-- Same logic chained under stock rule 92900 (it matches the same EID10 events first and would shadow 100110) -->
+  <rule id="100111" level="12">
+    <if_sid>92900</if_sid>
+    <field name="win.eventdata.targetImage" type="pcre2">(?i)\\lsass\.exe$</field>
+    <field name="win.eventdata.grantedAccess" type="pcre2">(?i)^0x(1010|1410|1438|143a|1418|1fffff|1f3fff|1f1fff|1f0fff|40)$</field>
+    <field name="win.eventdata.sourceImage" type="pcre2" negate="yes">(?i)\\(MsMpEng|MsSense|VBoxService|wazuh-agent|csrss|wininit|wmiprvse|Sysmon64)\.exe$</field>
+    <description>CA-Lab: LSASS memory access by $(win.eventdata.sourceImage) (access $(win.eventdata.grantedAccess)) - possible credential dumping</description>
+    <mitre><id>T1003.001</id></mitre>
+    <group>ca_credential_access,</group>
+  </rule>
+
+  <!-- ================================================================== -->
+  <!--  Execution: PowerShell                                             -->
+  <!-- ================================================================== -->
+
+  <rule id="100120" level="10">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\(powershell|pwsh)\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)\s-(e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedcommand)\s+[A-Za-z0-9+/=]{16,}</field>
+    <description>CA-Lab: Encoded PowerShell command executed by $(win.eventdata.user)</description>
+    <mitre><id>T1059.001</id><id>T1027</id></mitre>
+    <group>ca_execution,</group>
+  </rule>
+
+  <rule id="100121" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\(powershell|pwsh)\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(\bIEX\b|Invoke-Expression|DownloadString|DownloadFile|DownloadData|Net\.WebClient|Invoke-WebRequest|\biwr\b|Invoke-RestMethod|Start-BitsTransfer)</field>
+    <description>CA-Lab: PowerShell download cradle / IEX in command line: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1059.001</id><id>T1105</id></mitre>
+    <group>ca_execution,</group>
+  </rule>
+
+  <rule id="100122" level="12">
+    <if_group>powershell</if_group>
+    <field name="win.system.eventID">^4104$</field>
+    <field name="win.eventdata.scriptBlockText" type="pcre2">(?i)(DownloadString|DownloadFile|\bIEX\s*\(|Invoke-Expression|FromBase64String|Invoke-Mimikatz|sekurlsa|MiniDumpWriteDump|comsvcs|Invoke-Shellcode|AmsiUtils)</field>
+    <description>CA-Lab: Suspicious PowerShell script block (4104) on $(win.system.computer)</description>
+    <mitre><id>T1059.001</id></mitre>
+    <group>ca_execution,</group>
+  </rule>
+
+  <!-- ================================================================== -->
+  <!--  Persistence: scheduled tasks, Run keys                            -->
+  <!-- ================================================================== -->
+
+  <rule id="100130" level="8">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\schtasks\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)[/-]create</field>
+    <description>CA-Lab: Scheduled task created via schtasks: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1053.005</id></mitre>
+    <group>ca_persistence,</group>
+  </rule>
+
+  <rule id="100131" level="8">
+    <if_group>windows_security</if_group>
+    <field name="win.system.eventID">^4698$</field>
+    <description>CA-Lab: Scheduled task registered (4698): $(win.eventdata.taskName)</description>
+    <mitre><id>T1053.005</id></mitre>
+    <group>ca_persistence,</group>
+  </rule>
+
+  <rule id="100140" level="10">
+    <if_group>sysmon_event_13</if_group>
+    <field name="win.eventdata.targetObject" type="pcre2">(?i)\\+CurrentVersion\\+Run(Once|OnceEx|Services|ServicesOnce)?\\+</field>
+    <field name="win.eventdata.image" type="pcre2" negate="yes">(?i)\\(OneDriveSetup|OneDrive|SecurityHealthSetup|msiexec|VBoxTray)\.exe$</field>
+    <description>CA-Lab: Run-key persistence set by $(win.eventdata.image): $(win.eventdata.targetObject)</description>
+    <mitre><id>T1547.001</id></mitre>
+    <group>ca_persistence,</group>
+  </rule>
+
+  <!-- Same logic chained under stock rule 92302 (Run key modified via command-line tool), which shadows 100140 -->
+  <rule id="100141" level="10">
+    <if_sid>92302</if_sid>
+    <field name="win.eventdata.targetObject" type="pcre2">(?i)\\+CurrentVersion\\+Run(Once|OnceEx|Services|ServicesOnce)?\\+</field>
+    <description>CA-Lab: Run-key persistence set by $(win.eventdata.image): $(win.eventdata.targetObject)</description>
+    <mitre><id>T1547.001</id></mitre>
+    <group>ca_persistence,</group>
+  </rule>
+
+  <!-- ================================================================== -->
+  <!--  LOLBins: ingress tool transfer / proxy execution                 -->
+  <!-- ================================================================== -->
+
+  <rule id="100150" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.originalFileName" type="pcre2">(?i)^CertUtil\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(urlcache|verifyctl|https?://)</field>
+    <description>CA-Lab: certutil used to download a file: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1105</id></mitre>
+    <group>ca_lolbin,</group>
+  </rule>
+
+  <rule id="100151" level="10">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.originalFileName" type="pcre2">(?i)^CertUtil\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)\s[/-]decode(hex)?\s</field>
+    <description>CA-Lab: certutil decoding a file: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1140</id></mitre>
+    <group>ca_lolbin,</group>
+  </rule>
+
+  <rule id="100152" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\bitsadmin\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(/transfer|/addfile|/SetNotifyCmdLine|https?://)</field>
+    <description>CA-Lab: bitsadmin transfer/job abuse: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1197</id><id>T1105</id></mitre>
+    <group>ca_lolbin,</group>
+  </rule>
+
+  <rule id="100153" level="10">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.originalFileName" type="pcre2">(?i)^RUNDLL32\.EXE$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(javascript:|vbscript:|mshtml|RunHTMLApplication|\\+Temp\\+|\\+AppData\\+|\\+Users\\+Public\\+|\\+ProgramData\\+|url\.dll,|ShellExec_RunDLL|advpack\.dll|ieadvpack|pcwutl|zipfldr|setupapi\.dll,InstallHinfSection|\.(txt|dat|tmp|png|jpg|log)\b)</field>
+    <description>CA-Lab: Suspicious rundll32 proxy execution: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1218.011</id></mitre>
+    <group>ca_defense_evasion,</group>
+  </rule>
+
+  <rule id="100154" level="13">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)comsvcs(\.dll)?[, ]+(#\s*24|MiniDump)</field>
+    <description>CA-Lab: LSASS dump via comsvcs.dll MiniDump: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1003.001</id><id>T1218.011</id></mitre>
+    <group>ca_credential_access,</group>
+  </rule>
+
+  <rule id="100155" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(Set-MpPreference\s.*-Disable|Add-MpPreference\s.*-Exclusion|DisableRealtimeMonitoring|DisableAntiSpyware|sc(\.exe)?\s+(stop|config|delete)\s+WinDefend|Stop-Service\s+.*WinDefend)</field>
+    <description>CA-Lab: Attempt to disable/weaken Microsoft Defender: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1562.001</id></mitre>
+    <group>ca_defense_evasion,</group>
+  </rule>
+
+  <rule id="100156" level="8">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.originalFileName" type="pcre2">(?i)^net1?\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)\buser\b.*\s/add\b</field>
+    <description>CA-Lab: Local account created via net user /add: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1136.001</id></mitre>
+    <group>ca_persistence,</group>
+  </rule>
+
+  <rule id="100157" level="10">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.originalFileName" type="pcre2">(?i)^net1?\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)\blocalgroup\b.*\badministrators\b.*\s/add\b</field>
+    <description>CA-Lab: Account added to local Administrators via net localgroup: $(win.eventdata.commandLine)</description>
+    <mitre><id>T1098</id></mitre>
+    <group>ca_privilege_escalation,</group>
+  </rule>
+
+  <!-- ================================================================== -->
+  <!--  Security log: accounts, groups, log clearing                      -->
+  <!-- ================================================================== -->
+
+  <rule id="100160" level="10">
+    <if_group>windows_security</if_group>
+    <field name="win.system.eventID">^4720$</field>
+    <description>CA-Lab: New local user created: $(win.eventdata.targetUserName) by $(win.eventdata.subjectUserName)</description>
+    <mitre><id>T1136.001</id></mitre>
+    <group>ca_persistence,</group>
+  </rule>
+
+  <rule id="100161" level="12">
+    <if_group>windows_security</if_group>
+    <field name="win.system.eventID">^4732$</field>
+    <field name="win.eventdata.targetSid" type="pcre2">^S-1-5-32-544$</field>
+    <description>CA-Lab: Member added to local Administrators by $(win.eventdata.subjectUserName)</description>
+    <mitre><id>T1098</id></mitre>
+    <group>ca_privilege_escalation,</group>
+  </rule>
+
+  <rule id="100162" level="13">
+    <if_group>windows</if_group>
+    <field name="win.system.channel">^Security$</field>
+    <field name="win.system.eventID">^1102$</field>
+    <description>CA-Lab: Security audit log CLEARED on $(win.system.computer)</description>
+    <mitre><id>T1070.001</id></mitre>
+    <group>ca_defense_evasion,</group>
+  </rule>
+
+  <!-- ================================================================== -->
+  <!--  IOC matching (CDB lists, filled by the CTI team later)           -->
+  <!-- ================================================================== -->
+
+  <!-- FIM new (554) / modified (550) file; same pattern as the stock malware rule 99901 -->
+  <rule id="100170" level="13">
+    <if_sid>554, 550</if_sid>
+    <list field="sha256" lookup="match_key">etc/lists/ca-ioc/ca-ioc-hashes</list>
+    <description>CA-Lab IOC: file with known-bad SHA256 written: $(syscheck.path)</description>
+    <group>ca_ioc,</group>
+  </rule>
+
+  <rule id="100171" level="12">
+    <if_group>sysmon_event3</if_group>
+    <list field="win.eventdata.destinationIp" lookup="address_match_key">etc/lists/ca-ioc/ca-ioc-ips</list>
+    <description>CA-Lab IOC: connection to known-bad IP $(win.eventdata.destinationIp) by $(win.eventdata.image)</description>
+    <mitre><id>T1071</id></mitre>
+    <group>ca_ioc,</group>
+  </rule>
+
+  <rule id="100172" level="12">
+    <if_group>sysmon_event_22</if_group>
+    <list field="win.eventdata.queryName" lookup="match_key">etc/lists/ca-ioc/ca-ioc-domains</list>
+    <description>CA-Lab IOC: DNS query for known-bad domain $(win.eventdata.queryName) by $(win.eventdata.image)</description>
+    <mitre><id>T1071.004</id></mitre>
+    <group>ca_ioc,</group>
+  </rule>
+
+</group>
